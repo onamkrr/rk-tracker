@@ -33,6 +33,12 @@ const {useState,useEffect,useRef,useMemo}=React;
 
 // ── MODE: detect ?entry param for manager form ────────────────────────────────
 const IS_ENTRY_MODE = new URLSearchParams(window.location.search).has("entry");
+const URL_PARAMS = new URLSearchParams(window.location.search);
+const VIEW_PERSON = URL_PARAMS.get("person");
+const VIEW_ACCOUNT = URL_PARAMS.get("account");
+const VIEW_TAG = URL_PARAMS.get("tag");
+const VIEW_CATEGORY = URL_PARAMS.get("category");
+const IS_VIEW_MODE = !!(VIEW_PERSON||VIEW_ACCOUNT||VIEW_TAG||VIEW_CATEGORY);
 const OWNER_KEY = "rk_owner_verified";
 
 // ── DATA DEFINITIONS ──────────────────────────────────────────────────────────
@@ -408,6 +414,136 @@ function EntryForm({initial,onSave,onClose,dropdowns,onAddToDropdown,readOnly}){
   </div>;
 }
 
+// ── SHAREABLE READ-ONLY VIEW ──────────────────────────────────────────────────
+function ShareableView(){
+  const entries=loadEntries(); // load directly from localStorage
+  const label=VIEW_PERSON||VIEW_ACCOUNT||VIEW_TAG||VIEW_CATEGORY;
+  const filtered=entries.filter(e=>{
+    if(VIEW_PERSON&&(e.person||"").toLowerCase()!==VIEW_PERSON.toLowerCase())return false;
+    if(VIEW_ACCOUNT&&(e.account||"").toLowerCase()!==VIEW_ACCOUNT.toLowerCase())return false;
+    if(VIEW_TAG&&!e.tags?.map(t=>t.toLowerCase()).includes(VIEW_TAG.toLowerCase()))return false;
+    if(VIEW_CATEGORY&&(e.category||"").toLowerCase()!==VIEW_CATEGORY.toLowerCase())return false;
+    return true;
+  }).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+
+  const pending=filtered.filter(e=>!e.tags?.includes("Done"));
+  const done=filtered.filter(e=>e.tags?.includes("Done"));
+
+  return<div style={{minHeight:"100vh",background:"linear-gradient(160deg,#fdf8ef,#f8f2e4)",fontFamily:"'Palatino Linotype','Book Antiqua',Palatino,serif"}}>
+    <div style={{background:"linear-gradient(135deg,#2a1800,#5a3800)",padding:"16px 18px",boxShadow:"0 4px 20px rgba(0,0,0,.3)"}}>
+      <div style={{fontSize:11,color:"#c8a860",marginBottom:4}}>🌿 Onam Agarbathi · RK Life Tracker</div>
+      <h1 style={{margin:0,fontSize:20,color:"#f5d890",fontWeight:700}}>
+        {VIEW_PERSON?"👤 "+VIEW_PERSON:VIEW_ACCOUNT?"🏦 "+VIEW_ACCOUNT:VIEW_TAG?"🏷 "+VIEW_TAG:"📂 "+VIEW_CATEGORY}
+      </h1>
+      <div style={{fontSize:12,color:"#c8a860",marginTop:4}}>
+        {pending.length} pending · {done.length} done · {filtered.length} total
+      </div>
+    </div>
+
+    <div style={{padding:"14px 12px 40px"}}>
+      {filtered.length===0?<div style={{textAlign:"center",padding:"50px 20px",color:"#b0966a"}}>
+        <div style={{fontSize:36,marginBottom:10}}>📋</div>
+        <div style={{fontSize:15}}>No tasks found for {label}</div>
+      </div>:(
+        <div>
+          {/* PENDING SECTION */}
+          {pending.length>0&&<div style={{marginBottom:20}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#8B0000",textTransform:"uppercase",letterSpacing:.6,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+              <span style={{background:"#8B0000",color:"#fff",borderRadius:20,padding:"2px 10px"}}>⏳ Pending — {pending.length}</span>
+            </div>
+            {pending.map((e,i)=><TaskCard key={e.id} entry={e} idx={i}/>)}
+          </div>}
+
+          {/* DONE SECTION */}
+          {done.length>0&&<div>
+            <div style={{fontSize:12,fontWeight:700,color:"#155724",textTransform:"uppercase",letterSpacing:.6,marginBottom:10}}>
+              <span style={{background:"#d4edda",color:"#155724",borderRadius:20,padding:"2px 10px",border:"1px solid #c3e6cb"}}>✅ Done — {done.length}</span>
+            </div>
+            {done.map((e,i)=><TaskCard key={e.id} entry={e} idx={i} faded/>)}
+          </div>}
+        </div>
+      )}
+    </div>
+
+    <div style={{position:"fixed",bottom:0,left:0,right:0,background:"linear-gradient(135deg,#2a1800,#4a2e00)",padding:"8px 16px",textAlign:"center",fontSize:11,color:"#9a8060"}}>
+      🌿 Onam Agarbathi — Read only view
+    </div>
+  </div>;
+}
+
+function TaskCard({entry:e,idx,faded}){
+  const ov=isOverdue(e.reminder)&&!e.tags?.includes("Done");
+  const isSP=e.tags?.includes("Super Pending");
+  return<div style={{background:isSP?"#fff0f0":faded?"#f8fbf8":"#fffdf7",border:`1.5px solid ${isSP?"#f5c6cb":faded?"#d4edda":"#e8dcc8"}`,borderRadius:12,padding:"12px 14px",marginBottom:10,opacity:faded?.8:1,boxShadow:"0 2px 8px rgba(0,0,0,.06)"}}>
+    <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:6}}>
+      <div style={{fontWeight:700,fontSize:14,color:faded?"#5a8060":"#2a1600",textDecoration:faded?"line-through":"none",flex:1}}>{e.title}</div>
+      <div style={{fontSize:11,color:"#9a8060",whiteSpace:"nowrap"}}>{fmtDate(e.date)}</div>
+    </div>
+    {e.tags?.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:6}}>{e.tags.map(t=><TagBadge key={t} tag={t}/>)}</div>}
+    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:e.notes?6:0}}>
+      {e.taskType&&<span style={{fontSize:11,color:"#5a3800",background:"#f9f3e8",borderRadius:6,padding:"2px 8px"}}>{e.taskType}</span>}
+      {e.amount&&<span style={{fontSize:12,color:"#1a5a00",fontWeight:700,background:"#f0faf0",borderRadius:6,padding:"2px 8px"}}>{e.amount}</span>}
+      {e.paymentStatus&&<span style={{fontSize:11,fontWeight:700,background:e.paymentStatus==="Paid"?"#d4edda":e.paymentStatus==="Overdue"?"#f8d7da":"#fff3cd",color:e.paymentStatus==="Paid"?"#155724":e.paymentStatus==="Overdue"?"#721c24":"#856404",borderRadius:6,padding:"2px 8px"}}>{e.paymentStatus}</span>}
+    </div>
+    {e.notes&&<div style={{fontSize:12,color:"#5a4030",lineHeight:1.5,background:"#fffdf5",borderRadius:8,padding:"7px 10px",marginBottom:e.reminder?6:0}}>{e.notes}</div>}
+    {e.reminder&&<div style={{fontSize:11,color:ov?"#c00":"#006aaa",fontWeight:ov?700:500,marginTop:4}}>
+      {ov?"🔴 OVERDUE":"📲"} {fmtDT(e.reminder)}{e.reminderNote&&" · "+e.reminderNote}
+    </div>}
+    {e.link&&<a href={e.link} target="_blank" rel="noreferrer" style={{fontSize:11,color:"#0057b0",display:"block",marginTop:4}}>🔗 {e.linkLabel||e.link}</a>}
+  </div>;
+}
+
+// ── SHARE LINKS PANEL ─────────────────────────────────────────────────────────
+function SharePanel({entries,onClose}){
+  const [copied,setCopied]=useState("");
+  const base=window.location.origin+window.location.pathname;
+  const persons=[...new Set(entries.map(e=>e.person).filter(Boolean))];
+  const accounts=[...new Set(entries.map(e=>e.account).filter(Boolean))];
+  const tags=[...new Set(entries.flatMap(e=>e.tags||[]).filter(Boolean))];
+  const categories=[...new Set(entries.map(e=>e.category).filter(Boolean))];
+
+  const copy=(url,key)=>{
+    navigator.clipboard.writeText(url).then(()=>{setCopied(key);setTimeout(()=>setCopied(""),2000);});
+  };
+
+  const LinkRow=({label,url,k})=><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:"#fffdf5",borderRadius:8,marginBottom:6,gap:8}}>
+    <div>
+      <div style={{fontSize:13,fontWeight:600,color:"#3a2800"}}>{label}</div>
+      <div style={{fontSize:10,color:"#9a8060",marginTop:1,wordBreak:"break-all"}}>{url}</div>
+    </div>
+    <button onClick={()=>copy(url,k)} style={{padding:"5px 12px",borderRadius:7,border:"none",background:copied===k?"#2a7a2a":"linear-gradient(135deg,#c8860a,#a06010)",color:"#fff",cursor:"pointer",fontSize:11,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>
+      {copied===k?"✓ Copied":"Copy"}
+    </button>
+  </div>;
+
+  return<div>
+    <h2 style={{margin:"0 0 4px",fontSize:18}}>🔗 Share View Links</h2>
+    <p style={{fontSize:12,color:"#9a8060",marginBottom:14}}>Share a read-only filtered view — recipient sees tasks, can't edit</p>
+
+    {persons.length>0&&<div style={{marginBottom:14}}>
+      <div className="lbl" style={{marginBottom:6}}>👤 By Person</div>
+      {persons.map(p=><LinkRow key={p} label={p} url={`${base}?person=${encodeURIComponent(p)}`} k={p}/>)}
+    </div>}
+
+    {tags.filter(t=>!["Done"].includes(t)).length>0&&<div style={{marginBottom:14}}>
+      <div className="lbl" style={{marginBottom:6}}>🏷 By Tag</div>
+      {tags.filter(t=>t!=="Done").map(t=><LinkRow key={t} label={t} url={`${base}?tag=${encodeURIComponent(t)}`} k={t}/>)}
+    </div>}
+
+    {accounts.length>0&&<div style={{marginBottom:14}}>
+      <div className="lbl" style={{marginBottom:6}}>🏦 By Account</div>
+      {accounts.map(a=><LinkRow key={a} label={a} url={`${base}?account=${encodeURIComponent(a)}`} k={a}/>)}
+    </div>}
+
+    {categories.length>0&&<div style={{marginBottom:14}}>
+      <div className="lbl" style={{marginBottom:6}}>📂 By Category</div>
+      {categories.map(c=><LinkRow key={c} label={c} url={`${base}?category=${encodeURIComponent(c)}`} k={c}/>)}
+    </div>}
+
+    <div style={{display:"flex",justifyContent:"flex-end",marginTop:8}}><button className="bgh" onClick={onClose}>Close</button></div>
+  </div>;
+}
+
 // ── MANAGER ENTRY MODE ────────────────────────────────────────────────────────
 function ManagerMode({dropdowns}){
   const [submitted,setSubmitted]=useState(false);
@@ -460,6 +596,56 @@ function DupeFinder({entries,onDelete,onClose}){
   </div>;
 }
 
+function exportPDF(entries, label){
+  const isDone=e=>e.tags?.includes("Done");
+  const pending=entries.filter(e=>!isDone(e));
+  const done=entries.filter(e=>isDone(e));
+
+  const rows=(list,title)=>{
+    if(!list.length)return"";
+    const rowsHtml=list.map((e,i)=>`
+      <tr style="background:${i%2===0?'#fffdf7':'#fff8ee'}">
+        <td style="padding:6px 8px;font-weight:700;color:#2a1600">${e.title}</td>
+        <td style="padding:6px 8px;color:#5a3800;white-space:nowrap">${fmtDate(e.date)}</td>
+        <td style="padding:6px 8px;color:#3a6000;font-weight:700">${e.amount||''}</td>
+        <td style="padding:6px 8px;color:#5a3800">${e.taskType||''}</td>
+        <td style="padding:6px 8px;color:${e.paymentStatus==='Paid'?'#155724':e.paymentStatus==='Overdue'?'#721c24':'#856404'};font-weight:700">${e.paymentStatus||''}</td>
+        <td style="padding:6px 8px;color:#3a2800;font-size:11px">${(e.notes||'').slice(0,60)}</td>
+      </tr>`).join('');
+    return`<h3 style="margin:16px 0 8px;color:${title==='Pending'?'#8B0000':'#155724'};font-size:14px">${title==='Pending'?'⏳':'✅'} ${title} (${list.length})</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:16px">
+      <thead><tr style="background:#4a2e00;color:#f5d890">
+        <th style="padding:6px 8px;text-align:left">Title</th>
+        <th style="padding:6px 8px;text-align:left">Date</th>
+        <th style="padding:6px 8px;text-align:left">Amount</th>
+        <th style="padding:6px 8px;text-align:left">Type</th>
+        <th style="padding:6px 8px;text-align:left">Status</th>
+        <th style="padding:6px 8px;text-align:left">Notes</th>
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>`;
+  };
+
+  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+  <style>
+    body{font-family:Georgia,serif;color:#2a1a00;padding:24px;max-width:900px;margin:0 auto;}
+    @media print{body{padding:0;}}
+  </style></head><body>
+  <div style="background:linear-gradient(135deg,#2a1800,#5a3800);color:#f5d890;padding:16px 20px;border-radius:8px;margin-bottom:20px">
+    <div style="font-size:11px;color:#c8a860;margin-bottom:4px">🌿 Onam Agarbathi · RK Life Tracker</div>
+    <div style="font-size:20px;font-weight:700">${label} — Task Report</div>
+    <div style="font-size:11px;color:#c8a860;margin-top:4px">Generated: ${new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})} · ${entries.length} total entries</div>
+  </div>
+  ${rows(pending,'Pending')}
+  ${rows(done,'Done')}
+  </body></html>`;
+
+  const w=window.open('','_blank');
+  w.document.write(html);
+  w.document.close();
+  setTimeout(()=>w.print(),500);
+}
+
 function exportCSV(entries){
   const h=["ID","Date","Month","Title","Category","Task Type","Person","Vendor","Account","Financial","Payment Status","Property","Chemical","Amount","Tags","Notes","Reminder","Recurring","Link","Attachments"];
   const rows=entries.map(e=>[e.id,e.date,e.month,e.title,e.category,e.taskType,e.person,e.vendor,e.account,e.financialType,e.paymentStatus,e.property,e.chemical,e.amount,(e.tags||[]).join("; "),e.notes,e.reminder,e.isRecurring?"Yes":"",e.link,(e.attachments||[]).length].map(v=>`"${String(v||"").replace(/"/g,'""')}"`));
@@ -501,9 +687,8 @@ function App(){
   if(IS_ENTRY_MODE) return<ManagerMode dropdowns={dropdowns}/>;
 
   const [authed,setAuthed]=useState(true);
-  if(!authed) return<OwnerGate onVerified={()=>setAuthed(true)}/>;
-
   const [entries,setEntries]=useState(loadEntries);
+  if(!authed) return<OwnerGate onVerified={()=>setAuthed(true)}/>;
   const [showForm,setShowForm]=useState(false);
   const [editE,setEditE]=useState(null);
   const [viewE,setViewE]=useState(null);
@@ -511,6 +696,7 @@ function App(){
   const [showTg,setShowTg]=useState(false);
   const [showAI,setShowAI]=useState(false);
   const [showDD,setShowDD]=useState(false);
+  const [showShare,setShowShare]=useState(false);
   const [chatId,setChatId]=useState(loadChatId);
   const [search,setSearch]=useState("");
   const [filterCat,setFilterCat]=useState("All");
@@ -586,6 +772,9 @@ function App(){
   const fSel={padding:"7px 10px",borderRadius:8,border:"1px solid #7a5a20",background:"rgba(255,255,255,.12)",color:"#f5e8c0",fontSize:12,cursor:"pointer",outline:"none"};
   const ALL_CATS=["All",...dropdowns.categories];
 
+  // ── READ-ONLY SHARE VIEW ──
+  if(IS_VIEW_MODE) return<ShareableView/>;
+
   return<div style={{minHeight:"100vh",background:"linear-gradient(160deg,#fdf8ef,#f8f2e4 50%,#fdf5e6)",paddingBottom:56}}>
 
     {/* TG BANNER */}
@@ -611,9 +800,14 @@ function App(){
           </div>
         </div>
         <div style={{display:"flex",gap:7,flexWrap:"wrap",alignItems:"center"}}>
-          <button onClick={()=>setShowAI(true)} className="ai-btn" style={{fontSize:12,padding:"7px 13px"}}>🧠 AI Insights</button>
+          <button onClick={()=>setShowShare(true)} style={{...fSel,border:"1.5px solid #c8a060",background:"rgba(255,255,255,.08)",color:"#f0cc80",fontSize:12,fontWeight:600}}>🔗 Share</button>
+          <button onClick={()=>setShowAI(true)} className="ai-btn" style={{fontSize:12,padding:"7px 13px"}}>🧠 AI</button>
           <button onClick={()=>setShowDD(true)} style={{...fSel,border:"1.5px solid #c8a060",background:"rgba(255,255,255,.08)",color:"#f0cc80",fontSize:12,fontWeight:600}}>⚙️ Dropdowns</button>
           <button onClick={()=>setHideDone(h=>!h)} style={{...fSel,background:hideDone?"rgba(200,255,200,.15)":"rgba(255,255,255,.08)",color:hideDone?"#90f090":"#f0cc80",border:"1.5px solid "+(hideDone?"#4a9a4a":"#c8a060"),fontSize:12,fontWeight:600}}>{hideDone?"Show All":"Hide Done"}</button>
+          <button onClick={()=>{
+            const label=filterPerson||filterTag||filterAccount||filterVendor||filterStatus||(filterCat!=="All"?filterCat:"")||"All Tasks";
+            exportPDF(filtered,label);
+          }} style={{...fSel,border:"1.5px solid #c8a060",background:"rgba(255,255,255,.08)",color:"#f0cc80",fontSize:12,fontWeight:600}}>↓ PDF ({filtered.length})</button>
           <button onClick={()=>exportCSV(entries)} style={{...fSel,border:"1.5px solid #c8a060",background:"rgba(255,255,255,.08)",color:"#f0cc80",fontSize:12,fontWeight:600}}>↓ CSV</button>
           <button onClick={()=>{setEditE(null);setShowForm(true);}} style={{padding:"8px 16px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#e8a020,#c07010)",color:"#fff",cursor:"pointer",fontSize:13,fontWeight:700,boxShadow:"0 4px 14px rgba(200,120,0,.35)"}}>+ New</button>
         </div>
@@ -724,6 +918,7 @@ function App(){
         <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}><button className="bgh" onClick={()=>setViewE(null)}>Close</button></div>
       </div>}
     </Modal>
+    <Modal open={showShare} onClose={()=>setShowShare(false)} wide><SharePanel entries={entries} onClose={()=>setShowShare(false)}/></Modal>
     <Modal open={showDupes} onClose={()=>setShowDupes(false)}><DupeFinder entries={entries} onDelete={delEntry} onClose={()=>setShowDupes(false)}/></Modal>
     <Modal open={showTg} onClose={()=>setShowTg(false)}><TelegramSetup onDone={id=>{setChatId(id);setShowTg(false);}} onClose={()=>setShowTg(false)}/></Modal>
     <Modal open={showAI} onClose={()=>setShowAI(false)} wide><AIPanel entries={entries} onClose={()=>setShowAI(false)}/></Modal>
