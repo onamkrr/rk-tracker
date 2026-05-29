@@ -95,8 +95,17 @@ function saveDD(d){localStorage.setItem(LS_DD,JSON.stringify(d));}
 // ── GOOGLE SHEETS API ─────────────────────────────────────────────────────────
 async function sheetsAPI(action,data={}){
   try{
-    const r=await fetch(SCRIPT_URL,{method:"POST",body:JSON.stringify({action,...data})});
-    return await r.json();
+    // Google Apps Script requires URL params for GET, body for POST
+    const url=action==="getAll"||action==="getDropdowns"?
+      `${SCRIPT_URL}?action=${action}`:SCRIPT_URL;
+    const r=await fetch(url,{
+      method:"POST",
+      body:JSON.stringify({action,...data}),
+      headers:{"Content-Type":"text/plain"} // GAS works better with text/plain
+    });
+    const text=await r.text();
+    try{return JSON.parse(text);}
+    catch(e){return {error:"Invalid response: "+text.slice(0,100)};}
   }catch(e){console.error("Sheets API error:",e);return {error:e.message};}
 }
 
@@ -361,18 +370,18 @@ function ScanBill({onResult}){
     try{
       const att=await fileToB64(file);
       const isPDF=file.type==="application/pdf";
-      let base64=att.base64;
-      let mtype=att.type;
       if(isPDF){
-        // For PDF send as document
-        const data=await claudeAPI(
+        const txt=await claudeAPI(
           "Extract all invoice/bill data and return as JSON with fields: title, date, vendor, amount, invoiceNo, notes, tags",
-          null,null,null
+          "You are an OCR assistant. Return only valid JSON.",
+          att.base64,"application/pdf"
         );
-        onResult({title:"Scanned PDF bill",notes:data,date:today(),tags:["Pending"],attachments:[att]});
+        let parsed={title:"Scanned PDF bill",notes:txt,date:today(),tags:["Pending"]};
+        try{parsed=JSON.parse(txt.replace(/```json|```/g,"").trim());}catch(ex){}
+        onResult({...parsed,attachments:[att],id:genId(),createdAt:new Date().toISOString()});
         setScanning(false);return;
       }
-      const data=await scanBill(base64,mtype);
+      const data=await scanBill(att.base64,att.type);
       onResult({...data,attachments:[att],id:genId(),createdAt:new Date().toISOString()});
     }catch(e){
       alert("Scan error: "+e.message);
