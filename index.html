@@ -37,7 +37,6 @@ const {useState,useEffect,useRef,useMemo,useCallback}=React;
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const SCRIPT_URL="https://script.google.com/macros/s/AKfycbykR0d_SVgZsKVG98IDG7yLQz_o0OvlSR7nu8Xk0koKg1PK9BBcdMQPA-XYTABPJ5tp4w/exec";
-const ANTHROPIC_KEY="ANTHROPIC_API_KEY_PLACEHOLDER";
 const BOT_TOKEN="8852628858:AAHAZ3ZjosHPrEC0OU8fDnRXBNcKnwO2gus";
 const OWNER_CHAT_ID="8632288596";
 const LS_CACHE="rk_cache_v2";
@@ -103,20 +102,13 @@ async function sheetsAPI(action,data={}){
 
 // ── CLAUDE API ────────────────────────────────────────────────────────────────
 async function claudeAPI(prompt,system,imageBase64,imageType){
-  const content=[];
-  if(imageBase64){
-    content.push({type:"image",source:{type:"base64",media_type:imageType||"image/jpeg",data:imageBase64}});
-  }
-  content.push({type:"text",text:prompt});
-  const r=await fetch("https://api.anthropic.com/v1/messages",{
-    method:"POST",
-    headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01"},
-    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:1000,
-      system:system||"You are a helpful assistant for Onam Agarbathi Pvt. Ltd., a Bangalore incense manufacturer.",
-      messages:[{role:"user",content}]})
+  const r=await fetch("/.netlify/functions/claude",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({prompt,system,imageBase64,imageType})
   });
   const d=await r.json();
-  return d.content?.[0]?.text||"";
+  if(d.error)throw new Error(d.error);
+  return d.text||"";
 }
 
 // ── TELEGRAM ──────────────────────────────────────────────────────────────────
