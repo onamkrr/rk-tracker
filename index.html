@@ -95,14 +95,24 @@ function saveDD(d){localStorage.setItem(LS_DD,JSON.stringify(d));}
 // ── GOOGLE SHEETS API ─────────────────────────────────────────────────────────
 async function sheetsAPI(action,data={}){
   try{
-    // GAS needs GET requests with URL params to avoid CORS issues
-    const flat={action};
-    Object.entries(data).forEach(([k,v])=>{flat[k]=typeof v==="object"?JSON.stringify(v):String(v);});
-    const params=new URLSearchParams(flat).toString();
-    const r=await fetch(`${SCRIPT_URL}?${params}`,{method:"GET",redirect:"follow"});
-    const text=await r.text();
-    try{return JSON.parse(text);}
-    catch(e){return {error:"Response: "+text.slice(0,80)};}
+    // For read actions use GET, for write actions use POST with no-cors fallback
+    const readActions=["getAll","getDropdowns","getVendors","ping","getDailySummary","lookupIFSC"];
+    if(readActions.includes(action)){
+      const params=new URLSearchParams({action}).toString();
+      const r=await fetch(`${SCRIPT_URL}?${params}`,{method:"GET",redirect:"follow"});
+      const text=await r.text();
+      try{return JSON.parse(text);}catch(e){return {error:text.slice(0,80)};}
+    } else {
+      // Write actions - POST
+      const r=await fetch(SCRIPT_URL,{
+        method:"POST",
+        redirect:"follow",
+        body:JSON.stringify({action,...data}),
+        headers:{"Content-Type":"text/plain;charset=utf-8"}
+      });
+      const text=await r.text();
+      try{return JSON.parse(text);}catch(e){return {status:"saved",note:text.slice(0,50)};}
+    }
   }catch(e){console.error("Sheets:",e);return {error:e.message};}
 }
 
