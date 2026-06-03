@@ -36,7 +36,7 @@ input,select,textarea,button{font-family:inherit;}
 const {useState,useEffect,useRef,useMemo,useCallback}=React;
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const SCRIPT_URL="https://script.google.com/macros/s/AKfycbykR0d_SVgZsKVG98IDG7yLQz_o0OvlSR7nu8Xk0koKg1PK9BBcdMQPA-XYTABPJ5tp4w/exec";
+const SCRIPT_URL="https://script.google.com/macros/s/AKfycbzWwuTJCzA5viwHOaZpHrlJOzZtmxS-8pfyEDh2zpF6a2xGihE6jt8iRv-J9A3jZq_32g/exec";
 const BOT_TOKEN="8852628858:AAHAZ3ZjosHPrEC0OU8fDnRXBNcKnwO2gus";
 const OWNER_CHAT_ID="8632288596";
 const LS_CACHE="rk_cache_v2";
@@ -95,18 +95,15 @@ function saveDD(d){localStorage.setItem(LS_DD,JSON.stringify(d));}
 // ── GOOGLE SHEETS API ─────────────────────────────────────────────────────────
 async function sheetsAPI(action,data={}){
   try{
-    // Google Apps Script requires URL params for GET, body for POST
-    const url=action==="getAll"||action==="getDropdowns"?
-      `${SCRIPT_URL}?action=${action}`:SCRIPT_URL;
-    const r=await fetch(url,{
-      method:"POST",
-      body:JSON.stringify({action,...data}),
-      headers:{"Content-Type":"text/plain"} // GAS works better with text/plain
-    });
+    // GAS needs GET requests with URL params to avoid CORS issues
+    const flat={action};
+    Object.entries(data).forEach(([k,v])=>{flat[k]=typeof v==="object"?JSON.stringify(v):String(v);});
+    const params=new URLSearchParams(flat).toString();
+    const r=await fetch(`${SCRIPT_URL}?${params}`,{method:"GET",redirect:"follow"});
     const text=await r.text();
     try{return JSON.parse(text);}
-    catch(e){return {error:"Invalid response: "+text.slice(0,100)};}
-  }catch(e){console.error("Sheets API error:",e);return {error:e.message};}
+    catch(e){return {error:"Response: "+text.slice(0,80)};}
+  }catch(e){console.error("Sheets:",e);return {error:e.message};}
 }
 
 // ── CLAUDE API ────────────────────────────────────────────────────────────────
@@ -629,6 +626,99 @@ function DupeFinder({entries,onDelete,onClose}){
   </div>;
 }
 
+
+// ── SHARE INDIVIDUAL ENTRY ────────────────────────────────────────────────────
+function shareEntry(entry){
+  const lines=[];
+  lines.push("📋 *"+entry.title+"*");
+  lines.push("📅 "+fmtDate(entry.date)+(entry.month?" · "+entry.month:""));
+  if(entry.taskType) lines.push("📌 "+entry.taskType);
+  if(entry.person)   lines.push("👤 "+entry.person);
+  if(entry.vendor)   lines.push("🏭 "+entry.vendor);
+  if(entry.account)  lines.push("🏦 "+entry.account);
+  if(entry.amount)   lines.push("💰 "+entry.amount);
+  if(entry.paymentStatus) lines.push("💳 "+entry.paymentStatus);
+  if(entry.property) lines.push("🏠 "+entry.property);
+  if(entry.chemical) lines.push("🧪 "+entry.chemical);
+  if(entry.tags?.length) lines.push("🏷 "+entry.tags.join(", "));
+  if(entry.notes)    lines.push("\n📝 "+entry.notes);
+  if(entry.reminder) lines.push("⏰ "+fmtDT(entry.reminder)+(entry.reminderNote?" — "+entry.reminderNote:""));
+  if(entry.link)     lines.push("🔗 "+(entry.linkLabel||entry.link)+": "+entry.link);
+  lines.push("\n🌿 Onam Agarbathi · RK Life Tracker");
+  const text=lines.join("\n");
+
+  // Try native share API first (works on iPhone)
+  if(navigator.share){
+    navigator.share({
+      title:entry.title,
+      text:text,
+      url:entry.link||window.location.href
+    }).catch(()=>{});
+  } else {
+    // Fallback: copy to clipboard
+    navigator.clipboard.writeText(text).then(()=>{
+      alert("Entry copied to clipboard! Paste in WhatsApp or Gmail.");
+    }).catch(()=>{
+      // Last resort: show in prompt
+      prompt("Copy this and share:",text);
+    });
+  }
+}
+
+function shareEntryHTML(entry){
+  // Generate a printable/shareable HTML card
+  const w=window.open("","_blank");
+  const atts=(entry.attachments||[]).filter(a=>a.data);
+  const imgs=atts.filter(a=>a.type?.startsWith("image/"));
+  const docs=atts.filter(a=>!a.type?.startsWith("image/"));
+
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>${entry.title}</title>
+  <style>
+    body{font-family:Georgia,serif;background:#fdf8ef;padding:16px;max-width:500px;margin:0 auto;}
+    .card{background:#fff;border-radius:16px;padding:20px;box-shadow:0 4px 24px rgba(0,0,0,.12);}
+    .header{background:linear-gradient(135deg,#2a1800,#5a3800);color:#f5d890;padding:14px 16px;border-radius:10px;margin-bottom:14px;}
+    .title{font-size:18px;font-weight:700;margin-bottom:4px;}
+    .sub{font-size:11px;color:#c8a860;}
+    .field{display:flex;gap:8px;margin-bottom:8px;font-size:13px;align-items:flex-start;}
+    .val{color:#2a1a00;flex:1;}
+    .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;margin:2px;}
+    .notes{background:#fffdf5;border:1px solid #e8dcc8;border-radius:8px;padding:10px;font-size:13px;color:#3a2800;margin-top:10px;line-height:1.6;}
+    .imgs{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;}
+    .imgs img{width:80px;height:80px;object-fit:cover;border-radius:8px;border:1.5px solid #e2d9c8;}
+    .footer{text-align:center;font-size:11px;color:#9a8060;margin-top:14px;}
+    .share-btn{display:block;width:100%;padding:12px;background:linear-gradient(135deg,#c8860a,#a06010);color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;margin-top:14px;font-family:Georgia,serif;}
+  </style></head><body>
+  <div class="card">
+    <div class="header">
+      <div class="title">${entry.title}</div>
+      <div class="sub">📅 ${fmtDate(entry.date)}${entry.month?" · "+entry.month:""}${entry.category?" · "+entry.category:""}</div>
+    </div>
+    ${entry.taskType?`<div class="field"><span>📌</span><span class="val">${entry.taskType}</span></div>`:""}
+    ${entry.person?`<div class="field"><span>👤</span><span class="val">${entry.person}</span></div>`:""}
+    ${entry.vendor?`<div class="field"><span>🏭</span><span class="val">${entry.vendor}</span></div>`:""}
+    ${entry.account?`<div class="field"><span>🏦</span><span class="val">${entry.account}</span></div>`:""}
+    ${entry.amount?`<div class="field"><span>💰</span><span class="val" style="font-weight:700;color:#1a5a00">${entry.amount}</span></div>`:""}
+    ${entry.paymentStatus?`<div class="field"><span>💳</span><span class="val">${entry.paymentStatus}</span></div>`:""}
+    ${entry.property?`<div class="field"><span>🏠</span><span class="val">${entry.property}</span></div>`:""}
+    ${entry.chemical?`<div class="field"><span>🧪</span><span class="val">${entry.chemical}</span></div>`:""}
+    ${entry.reminder?`<div class="field"><span>⏰</span><span class="val">${fmtDT(entry.reminder)}${entry.reminderNote?" — "+entry.reminderNote:""}</span></div>`:""}
+    ${entry.tags?.length?`<div style="margin-bottom:8px">${entry.tags.map(t=>`<span class="tag" style="background:#fff3cd;color:#856404">${t}</span>`).join("")}</div>`:""}
+    ${entry.notes?`<div class="notes">📝 ${entry.notes.replace(/\n/g,"<br/>")}</div>`:""}
+    ${entry.link?`<div class="field" style="margin-top:8px"><span>🔗</span><a href="${entry.link}" style="color:#0057b0;font-size:13px">${entry.linkLabel||entry.link}</a></div>`:""}
+    ${imgs.length?`<div class="imgs">${imgs.map(a=>`<img src="${a.data}" alt="${a.name}"/>`).join("")}</div>`:""}
+    ${docs.length?`<div style="margin-top:8px">${docs.map(a=>`<a href="${a.data}" style="display:inline-block;padding:4px 10px;background:#f0f4ff;border-radius:6px;font-size:12px;color:#339;margin:3px">${a.name}</a>`).join("")}</div>`:""}
+    <div class="footer">🌿 Onam Agarbathi Pvt. Ltd. · RK Life Tracker</div>
+    <button class="share-btn" onclick="if(navigator.share){navigator.share({title:'${entry.title}',text:document.body.innerText,url:window.location.href});}else{window.print();}">
+      📤 Share / Save as PDF
+    </button>
+  </div>
+  </body></html>`);
+  w.document.close();
+}
+
+
 function exportCSV(entries){
   const h=["ID","Date","Month","Title","Category","Task Type","Person","Vendor","Account","Financial","Payment Status","Property","Chemical","Amount","Tags","Notes","Reminder","Recurring","Link","Created At"];
   const rows=entries.map(e=>[e.id,e.date,e.month,e.title,e.category,e.taskType,e.person,e.vendor,e.account,e.financialType,e.paymentStatus,e.property,e.chemical,e.amount,(e.tags||[]).join("; "),e.notes,e.reminder,e.isRecurring?"Yes":"",e.link,e.createdAt].map(v=>`"${String(v||"").replace(/"/g,'""')}"`));
@@ -893,6 +983,7 @@ function App(){
                 <td style={{padding:"7px 8px"}}>{(e.attachments||[]).length>0?<div style={{display:"flex",gap:2}}>{e.attachments.slice(0,2).map((a,i)=><Thumb key={i} att={a} small/>)}{e.attachments.length>2&&<span style={{fontSize:9,color:"#9a8060",alignSelf:"center"}}>+{e.attachments.length-2}</span>}</div>:<span style={{color:"#d0c0a0",fontSize:10}}>—</span>}</td>
                 <td style={{padding:"7px 6px",whiteSpace:"nowrap"}}>
                   <button onClick={()=>setViewE(e)} style={{padding:"3px 8px",borderRadius:6,border:"1px solid #d0b880",background:"#fff8ee",color:"#8a5800",cursor:"pointer",fontSize:10,marginRight:3}}>View</button>
+                  <button onClick={()=>shareEntry(e)} style={{padding:"3px 8px",borderRadius:6,border:"1px solid #0088cc",background:"#e8f4fb",color:"#006aaa",cursor:"pointer",fontSize:10,marginRight:3}}>📤</button>
                   {!isDone&&<button onClick={()=>markDone(e.id)} style={{padding:"3px 8px",borderRadius:6,border:"1px solid #88cc88",background:"#edfaed",color:"#1a5a1a",cursor:"pointer",fontSize:10}}>✅</button>}
                 </td>
               </tr>;
@@ -916,6 +1007,8 @@ function App(){
             <h2 style={{margin:0,fontSize:18,color:"#2a1a00"}}>{viewE.title}</h2></div>
           <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
             {!viewE.tags?.includes("Done")&&<button onClick={()=>markDone(viewE.id)} style={{padding:"6px 12px",borderRadius:7,border:"1.5px solid #88cc88",background:"#edfaed",color:"#1a5a1a",cursor:"pointer",fontSize:12,fontWeight:700}}>✅ Done</button>}
+            <button onClick={()=>shareEntry(viewE)} style={{padding:"6px 12px",borderRadius:7,border:"1.5px solid #0088cc",background:"#e8f4fb",color:"#006aaa",cursor:"pointer",fontSize:12,fontWeight:700}}>📤 Share</button>
+            <button onClick={()=>shareEntryHTML(viewE)} style={{padding:"6px 12px",borderRadius:7,border:"1.5px solid #5a3a8a",background:"#f5eeff",color:"#5a1a8a",cursor:"pointer",fontSize:12}}>🖼 Card</button>
             <button onClick={()=>{setEditE(viewE);setViewE(null);setShowForm(true);}} style={{padding:"6px 12px",borderRadius:7,border:"1.5px solid #c8a060",background:"#fff8ee",color:"#8a5a00",cursor:"pointer",fontSize:12}}>✏️</button>
             <button onClick={()=>{if(window.confirm("Delete?"))delEntry(viewE.id);}} style={{padding:"6px 12px",borderRadius:7,border:"1.5px solid #f5a8ab",background:"#fff5f5",color:"#c00",cursor:"pointer",fontSize:12}}>🗑</button>
           </div>
