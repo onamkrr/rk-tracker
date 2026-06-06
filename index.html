@@ -36,7 +36,7 @@ input,select,textarea,button{font-family:inherit;}
 const {useState,useEffect,useRef,useMemo,useCallback}=React;
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const SCRIPT_URL="https://script.google.com/macros/s/AKfycbzWwuTJCzA5viwHOaZpHrlJOzZtmxS-8pfyEDh2zpF6a2xGihE6jt8iRv-J9A3jZq_32g/exec";
+const SCRIPT_URL="https://script.google.com/macros/s/AKfycbykR0d_SVgZsKVG98IDG7yLQz_o0OvlSR7nu8Xk0koKg1PK9BBcdMQPA-XYTABPJ5tp4w/exec";
 const BOT_TOKEN="8852628858:AAHAZ3ZjosHPrEC0OU8fDnRXBNcKnwO2gus";
 const OWNER_CHAT_ID="8632288596";
 const LS_CACHE="rk_cache_v2";
@@ -88,43 +88,59 @@ function fmtDT(d){if(!d)return"—";return new Date(d).toLocaleString("en-IN",{d
 function isOverdue(r){return r&&new Date(r)<new Date();}
 
 function loadCache(){try{return JSON.parse(localStorage.getItem(LS_CACHE))||[];}catch{return[];}}
-function saveCache(e){try{localStorage.setItem(LS_CACHE,JSON.stringify(e));}catch(err){console.warn("Cache full");}}
+function saveCache(e){
+  try{
+    localStorage.setItem(LS_CACHE,JSON.stringify(e));
+    // Keep rolling backup — last 3 saves
+    const backup={entries:e,savedAt:new Date().toISOString(),count:e.length};
+    localStorage.setItem(LS_CACHE+"_backup",JSON.stringify(backup));
+    // Also save dated backup
+    const dateKey=LS_CACHE+"_"+new Date().toISOString().slice(0,10);
+    localStorage.setItem(dateKey,JSON.stringify(backup));
+  }catch(err){
+    console.warn("Cache full — clearing old backups");
+    // Clear old dated backups to free space
+    Object.keys(localStorage).filter(k=>k.startsWith(LS_CACHE+"_20")).forEach(k=>localStorage.removeItem(k));
+    try{localStorage.setItem(LS_CACHE,JSON.stringify(e));}catch(e2){}
+  }
+}
 function loadDD(){try{return JSON.parse(localStorage.getItem(LS_DD))||DEFAULT_DD;}catch{return DEFAULT_DD;}}
 function saveDD(d){localStorage.setItem(LS_DD,JSON.stringify(d));}
 
 // ── GOOGLE SHEETS API ─────────────────────────────────────────────────────────
 async function sheetsAPI(action,data={}){
   try{
-    // For read actions use GET, for write actions use POST with no-cors fallback
-    const readActions=["getAll","getDropdowns","getVendors","ping","getDailySummary","lookupIFSC"];
-    if(readActions.includes(action)){
-      const params=new URLSearchParams({action}).toString();
-      const r=await fetch(`${SCRIPT_URL}?${params}`,{method:"GET",redirect:"follow"});
-      const text=await r.text();
-      try{return JSON.parse(text);}catch(e){return {error:text.slice(0,80)};}
-    } else {
-      // Write actions - POST
-      const r=await fetch(SCRIPT_URL,{
-        method:"POST",
-        redirect:"follow",
-        body:JSON.stringify({action,...data}),
-        headers:{"Content-Type":"text/plain;charset=utf-8"}
-      });
-      const text=await r.text();
-      try{return JSON.parse(text);}catch(e){return {status:"saved",note:text.slice(0,50)};}
-    }
-  }catch(e){console.error("Sheets:",e);return {error:e.message};}
+    const r=await fetch("/.netlify/functions/sheets",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action,...data})
+    });
+    if(!r.ok) throw new Error("Sheets error: "+r.status);
+    const text=await r.text();
+    try{return JSON.parse(text);}
+    catch(e){return {error:"Invalid response"};}
+  }catch(e){
+    console.error("Sheets:",e);
+    return {error:e.message};
+  }
 }
 
 // ── CLAUDE API ────────────────────────────────────────────────────────────────
 async function claudeAPI(prompt,system,imageBase64,imageType){
-  const r=await fetch("/.netlify/functions/claude",{
-    method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({prompt,system,imageBase64,imageType})
-  });
-  const d=await r.json();
-  if(d.error)throw new Error(d.error);
-  return d.text||"";
+  // Route through Netlify function to avoid CORS on iPhone Safari
+  try{
+    const r=await fetch("/.netlify/functions/claude",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({prompt,system,imageBase64,imageType})
+    });
+    if(!r.ok) throw new Error("Server error: "+r.status);
+    const d=await r.json();
+    if(d.error) throw new Error(d.error);
+    return d.text||"";
+  }catch(e){
+    throw new Error(e.message);
+  }
 }
 
 // ── TELEGRAM ──────────────────────────────────────────────────────────────────
@@ -239,14 +255,18 @@ async function getAIInsights(entries,question){
   const system=`You are a business intelligence assistant for Onam Agarbathi Pvt. Ltd., a 100+ year old Bangalore incense manufacturer (Vaishak brand). 
 You know: CSD/CPC orders, raw materials (Jasmine ASP, Sandal, Rose, bamboo sticks, jigat), compliance (GST, ESI, EPF, PT, TDS 194), 
 accounts (Kotak, IDBI, ICICI, Zerodha, HDFC), people (Prakash, Satish auditor, Maadhu, Virupaksha, Gopal Reddy).
-Be concise, practical, flag risks and action items. Use ₹ formatting.`;
+Analyse ALL data deeply including document contents in notes. Be specific with amounts, dates, names.
+Flag risks, overdue items, action items. Use ₹ formatting with lakhs/crores notation.`;
 
-  const summary=entries.slice(0,100).map(e=>
-    `[${e.date}] ${e.title}|Type:${e.taskType||"-"}|Person:${e.person||"-"}|Account:${e.account||"-"}|Amount:${e.amount||"-"}|Status:${e.paymentStatus||"-"}|Tags:${(e.tags||[]).join(",")}|Notes:${(e.notes||"").slice(0,60)}`
-  ).join("\n");
+  // Include full notes (which may contain extracted document text)
+  const summary=entries.slice(0,150).map(e=>{
+    const notesFull=(e.notes||"").slice(0,200); // More notes for deeper analysis
+    const hasAtt=(e.attachments||[]).length>0?"[HAS ATTACHMENTS]":"";
+    return `[${e.date}] ${e.title}|Cat:${e.category||"-"}|Type:${e.taskType||"-"}|Person:${e.person||"-"}|Vendor:${e.vendor||"-"}|Account:${e.account||"-"}|Amount:${e.amount||"-"}|Status:${e.paymentStatus||"-"}|Tags:${(e.tags||[]).join(",")}|Notes:${notesFull}${hasAtt}`;
+  }).join("\n");
 
   return await claudeAPI(
-    `Tracker data:\n${summary}\n\nQuestion: ${question||"Give key insights, urgent items, overdue payments."}`,
+    `Business tracker data (${entries.length} total entries):\n${summary}\n\nQuestion: ${question||"Give comprehensive business insights: urgent items, overdue payments, cash flow, compliance due, production status."}`,
     system
   );
 }
@@ -367,50 +387,102 @@ function VoiceInput({onResult,dropdowns}){
 }
 
 // ── SCAN BILL COMPONENT ───────────────────────────────────────────────────────
-function ScanBill({onResult}){
+function ScanBill({onResult,onMultiResult}){
   const [scanning,setScanning]=useState(false);
-  const fileRef=useRef();
-  const camRef=useRef();
+  const [scanMsg,setScanMsg]=useState("");
+  const [progress,setProgress]=useState({current:0,total:0});
 
   const processFile=async(file)=>{
-    setScanning(true);
+    if(!file)return;
+    setScanning(true);setScanMsg("Reading bill...");
     try{
       const att=await fileToB64(file);
-      const isPDF=file.type==="application/pdf";
-      if(isPDF){
-        const txt=await claudeAPI(
-          "Extract all invoice/bill data and return as JSON with fields: title, date, vendor, amount, invoiceNo, notes, tags",
-          "You are an OCR assistant. Return only valid JSON.",
-          att.base64,"application/pdf"
-        );
-        let parsed={title:"Scanned PDF bill",notes:txt,date:today(),tags:["Pending"]};
-        try{parsed=JSON.parse(txt.replace(/```json|```/g,"").trim());}catch(ex){}
-        onResult({...parsed,attachments:[att],id:genId(),createdAt:new Date().toISOString()});
-        setScanning(false);return;
-      }
-      const data=await scanBill(att.base64,att.type);
-      onResult({...data,attachments:[att],id:genId(),createdAt:new Date().toISOString()});
-    }catch(e){
-      alert("Scan error: "+e.message);
-    }
+      setScanMsg("Analysing with AI...");
+      const txt=await claudeAPI(
+        "Extract all data from this bill/invoice. Return ONLY valid JSON: {title, date (YYYY-MM-DD), vendor, amount (with ₹), invoiceNo, gstin, category, paymentStatus, notes, tags (array)}",
+        "You are an OCR assistant for Onam Agarbathi. Return only valid JSON, no markdown backticks.",
+        att.base64, att.type
+      );
+      let parsed={title:"Scanned bill",date:today(),tags:["Pending"],category:"Business - Purchase",paymentStatus:"Payment Pending"};
+      try{parsed={...parsed,...JSON.parse(txt.replace(/```json|```/g,"").trim())};}
+      catch(ex){parsed.notes=txt.slice(0,300);}
+      onResult({...parsed,attachments:[att],id:genId(),createdAt:new Date().toISOString()});
+      setScanMsg("✅ Done!");
+    }catch(e){alert("Scan error: "+e.message);}
     setScanning(false);
+    setTimeout(()=>setScanMsg(""),2000);
+  };
+
+  const processMultiple=async(files)=>{
+    if(!files||files.length===0)return;
+    const arr=Array.from(files);
+    setScanning(true);
+    setProgress({current:0,total:arr.length});
+    const results=[];
+    for(let i=0;i<arr.length;i++){
+      setScanMsg(`Scanning ${i+1} of ${arr.length}...`);
+      setProgress({current:i+1,total:arr.length});
+      try{
+        const att=await fileToB64(arr[i]);
+        const txt=await claudeAPI(
+          "Extract all data from this bill/invoice. Return ONLY valid JSON: {title, date (YYYY-MM-DD), vendor, amount (with ₹), invoiceNo, gstin, category, paymentStatus, notes, tags (array)}",
+          "You are an OCR assistant for Onam Agarbathi. Return only valid JSON, no markdown.",
+          att.base64, att.type
+        );
+        let parsed={title:`Bill ${i+1}`,date:today(),tags:["Pending"],category:"Business - Purchase",paymentStatus:"Payment Pending"};
+        try{parsed={...parsed,...JSON.parse(txt.replace(/```json|```/g,"").trim())};}
+        catch(ex){parsed.notes=txt.slice(0,300);}
+        results.push({...parsed,attachments:[att],id:genId(),createdAt:new Date().toISOString()});
+      }catch(e){
+        results.push({title:`Bill ${i+1} (scan failed)`,date:today(),tags:["Pending"],notes:e.message,id:genId(),createdAt:new Date().toISOString()});
+      }
+    }
+    setScanMsg(`✅ ${results.length} bills scanned!`);
+    setScanning(false);
+    setProgress({current:0,total:0});
+    if(onMultiResult) onMultiResult(results);
+    else results.forEach(r=>onResult(r));
+    setTimeout(()=>setScanMsg(""),3000);
+  };
+
+  const openCamera=()=>{
+    const i=document.createElement("input");
+    i.type="file";i.accept="image/*";i.capture="environment";
+    i.onchange=e=>{if(e.target.files[0])processFile(e.target.files[0]);};
+    i.click();
+  };
+  const openGallery=()=>{
+    const i=document.createElement("input");
+    i.type="file";i.accept="image/*,application/pdf,.pdf";
+    i.onchange=e=>{if(e.target.files[0])processFile(e.target.files[0]);};
+    i.click();
+  };
+  const openMulti=()=>{
+    const i=document.createElement("input");
+    i.type="file";i.accept="image/*,application/pdf,.pdf";
+    i.multiple=true;
+    i.onchange=e=>{if(e.target.files.length>0)processMultiple(e.target.files);};
+    i.click();
   };
 
   return<div style={{background:"#edfaed",border:"1.5px solid #a8d8a8",borderRadius:10,padding:13,marginBottom:12}}>
     <div style={{fontWeight:700,fontSize:12,color:"#1a5a1a",marginBottom:8}}>📸 Scan Bill / Invoice → Auto-fill</div>
-    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-      <button onClick={()=>camRef.current.click()} disabled={scanning} className="scan-btn">
-        {scanning?"⏳ Scanning…":"📷 Camera"}
+    <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:6}}>
+      <button onClick={openCamera} disabled={scanning} className="scan-btn" style={{fontSize:12,padding:"8px 12px"}}>
+        {scanning?"⏳":"📷"} Camera
       </button>
-      <button onClick={()=>fileRef.current.click()} disabled={scanning} className="scan-btn" style={{background:"linear-gradient(135deg,#5a6a2a,#3a4a1a)"}}>
-        {scanning?"⏳ Scanning…":"🖼 Gallery / Files"}
+      <button onClick={openGallery} disabled={scanning} className="scan-btn" style={{background:"linear-gradient(135deg,#5a6a2a,#3a4a1a)",fontSize:12,padding:"8px 12px"}}>
+        {scanning?"⏳":"🖼"} Gallery
+      </button>
+      <button onClick={openMulti} disabled={scanning} className="scan-btn" style={{background:"linear-gradient(135deg,#1a5a7a,#0a3a5a)",fontSize:12,padding:"8px 12px"}}>
+        {scanning?"⏳":"📚"} Multi Bills
       </button>
     </div>
-    <input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>e.target.files[0]&&processFile(e.target.files[0])}/>
-    <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf" style={{display:"none"}} onChange={e=>e.target.files[0]&&processFile(e.target.files[0])}/>
-    <div style={{fontSize:10,color:"#5a8a5a",marginTop:6}}>
-      Works with: Tax invoices, delivery challans, receipts, PDFs, WhatsApp photos
-    </div>
+    {scanMsg&&<div style={{fontSize:12,color:"#1a5a1a",fontWeight:600,marginBottom:4}}>{scanMsg}</div>}
+    {progress.total>0&&<div style={{background:"#c8e8c8",borderRadius:20,height:6,marginBottom:6}}>
+      <div style={{background:"#1a7a1a",borderRadius:20,height:6,width:`${(progress.current/progress.total)*100}%`,transition:"width .3s"}}/>
+    </div>}
+    <div style={{fontSize:10,color:"#5a8a5a"}}>📚 Multi Bills: select up to 10 photos at once → all auto-filled</div>
   </div>;
 }
 
@@ -501,7 +573,13 @@ function EntryForm({initial,onSave,onClose,dropdowns,onAddToDropdown,saving}){
     <VoiceInput onResult={applyVoiceData} dropdowns={dropdowns}/>
 
     {/* SCAN BILL */}
-    <ScanBill onResult={applyScanData}/>
+    <ScanBill onResult={applyScanData} onMultiResult={(results)=>{
+      if(results.length===1){applyScanData(results[0]);return;}
+      // For multiple bills - save all except first directly, open first in form
+      results.slice(1).forEach(r=>onSave({...r,id:r.id||genId()}));
+      applyScanData(results[0]);
+      if(results.length>1)alert(`✅ ${results.length} bills scanned! First bill loaded in form. Other ${results.length-1} saved automatically.`);
+    }}/>
 
     <div style={G2}>
       <div><label className="lbl">Date *</label><input className="inp" type="date" value={f.date} onChange={e=>set("date",e.target.value)}/></div>
@@ -509,7 +587,13 @@ function EntryForm({initial,onSave,onClose,dropdowns,onAddToDropdown,saving}){
     </div>
     <div style={{marginBottom:12}}><label className="lbl">Title *</label><input className="inp" type="text" value={f.title} placeholder="What is this about?" onChange={e=>set("title",e.target.value)}/></div>
     <div style={G2}>
-      <div><label className="lbl">Category</label><select className="inp" value={f.category} onChange={e=>set("category",e.target.value)}>{dropdowns.categories.map(c=><option key={c}>{c}</option>)}</select></div>
+      <div>
+        <label className="lbl">Category</label>
+        <div style={{display:"flex",gap:6}}>
+          <select className="inp" value={f.category} onChange={e=>set("category",e.target.value)} style={{flex:1}}>{dropdowns.categories.map(c=><option key={c}>{c}</option>)}</select>
+          <button type="button" onClick={()=>{const v=prompt("New category name:");if(v&&v.trim()){addNew("categories",v.trim());set("category",v.trim());}}} style={{padding:"6px 10px",borderRadius:8,border:"1.5px solid #c8a060",background:"#fff8ee",color:"#8a5a00",cursor:"pointer",fontSize:14,fontWeight:700,flexShrink:0}}>＋</button>
+        </div>
+      </div>
       <div><Combo label="Task Type" value={f.taskType} onChange={v=>set("taskType",v)} options={dropdowns.taskTypes} onAddNew={v=>addNew("taskTypes",v)}/></div>
     </div>
     <div style={G2}>
@@ -788,16 +872,26 @@ function App(){
 
   useEffect(()=>{saveDD(dropdowns);},[dropdowns]);
 
-  // Load from Google Sheets on start
+  // BULLETPROOF: localStorage is master, Sheets is backup only
   useEffect(()=>{
-    setLoading(true);setSyncStatus("Syncing with Google Sheets…");
-    sheetsAPI("getAll").then(r=>{
-      if(r.entries&&r.entries.length>0){setEntries(r.entries);saveCache(r.entries);setSyncStatus("✅ Synced");}
-      else if(r.entries){setSyncStatus("✅ Connected — no entries yet");}
-      else setSyncStatus("📴 Offline — showing cached data");
-      setLoading(false);
-    }).catch(()=>{setSyncStatus("📴 Offline — showing cached data");setLoading(false);});
-    // Load dropdowns from sheets
+    const cached=loadCache();
+    setEntries(cached);
+    setLoading(false);
+    setSyncStatus(cached.length>0?"📱 "+cached.length+" entries loaded":"📱 Ready — tap + New to start");
+    // Push local to sheets silently
+    if(cached.length>0){
+      sheetsAPI("getAll").then(r=>{
+        if(r.error||!r.entries){setSyncStatus("📴 Offline · "+cached.length+" entries safe");return;}
+        const ids=new Set(r.entries.map(e=>e.id));
+        const missing=cached.filter(e=>!ids.has(e.id));
+        if(missing.length>0){
+          missing.forEach(e=>sheetsAPI("save",{entry:e}).catch(()=>{}));
+          setSyncStatus("✅ "+cached.length+" entries · "+missing.length+" backed up");
+        } else {
+          setSyncStatus("✅ "+cached.length+" entries · all in Sheets");
+        }
+      }).catch(()=>setSyncStatus("📴 Offline · "+cached.length+" entries safe"));
+    }
     sheetsAPI("getDropdowns").then(r=>{if(r.dropdowns)setDropdowns(p=>({...p,...r.dropdowns}));}).catch(()=>{});
   },[]);
 
@@ -835,10 +929,23 @@ function App(){
   };
 
   const refresh=async()=>{
-    setLoading(true);setSyncStatus("Syncing…");
-    const r=await sheetsAPI("getAll");
-    if(r.entries){setEntries(r.entries);saveCache(r.entries);setSyncStatus("✅ Synced "+new Date().toLocaleTimeString("en-IN"));}
-    else setSyncStatus("⚠️ Sync failed");
+    // Manual sync — push local to sheets, never overwrite local
+    setLoading(true);setSyncStatus("📤 Syncing to Google Sheets...");
+    const cached=loadCache();
+    if(cached.length===0){setSyncStatus("📱 No entries to sync");setLoading(false);return;}
+    try{
+      const r=await sheetsAPI("getAll");
+      const sheetIds=new Set((r.entries||[]).map(e=>e.id));
+      const toSync=cached.filter(e=>!sheetIds.has(e.id));
+      if(toSync.length>0){
+        await Promise.all(toSync.map(e=>sheetsAPI("save",{entry:e}).catch(()=>{})));
+        setSyncStatus("✅ "+cached.length+" entries · "+toSync.length+" new backed up · "+new Date().toLocaleTimeString("en-IN"));
+      } else {
+        setSyncStatus("✅ All "+cached.length+" entries backed up · "+new Date().toLocaleTimeString("en-IN"));
+      }
+    }catch(e){
+      setSyncStatus("📴 Offline — "+cached.length+" entries safe locally");
+    }
     setLoading(false);
   };
 
@@ -906,8 +1013,30 @@ function App(){
   return<div style={{minHeight:"100vh",background:"linear-gradient(160deg,#fdf8ef,#f8f2e4 50%,#fdf5e6)",paddingBottom:52}}>
 
     {/* SYNC BAR */}
-    <div style={{background:syncStatus.includes("✅")?"#1a5a1a":syncStatus.includes("⚠️")?"#7a5800":"#1a3a5a",padding:"4px 14px",fontSize:11,color:"#c8f0c8",display:"flex",alignItems:"center",gap:8}}>
+    <div style={{background:syncStatus.includes("✅")?"#1a5a1a":syncStatus.includes("⚠️")?"#7a5800":"#1a3a5a",padding:"4px 14px",fontSize:11,color:"#c8f0c8",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
       <span style={{flex:1}}>{syncStatus||"📊 Google Sheets connected"}</span>
+      <button onClick={()=>{
+        // Emergency recovery — restore from backup
+        try{
+          const backup=JSON.parse(localStorage.getItem(LS_CACHE+"_backup")||"null");
+          if(backup&&backup.entries&&backup.entries.length>0){
+            setEntries(backup.entries);
+            saveCache(backup.entries);
+            setSyncStatus("✅ Recovered "+backup.entries.length+" entries from backup ("+backup.savedAt?.slice(0,10)+")");
+          } else {
+            // Try today's backup
+            const todayKey=LS_CACHE+"_"+new Date().toISOString().slice(0,10);
+            const todayBackup=JSON.parse(localStorage.getItem(todayKey)||"null");
+            if(todayBackup&&todayBackup.entries){
+              setEntries(todayBackup.entries);
+              saveCache(todayBackup.entries);
+              setSyncStatus("✅ Recovered "+todayBackup.entries.length+" entries");
+            } else {
+              setSyncStatus("⚠️ No backup found");
+            }
+          }
+        }catch(e){setSyncStatus("⚠️ Recovery failed: "+e.message);}
+      }} style={{background:"rgba(255,150,50,.3)",border:"1px solid rgba(255,150,50,.5)",color:"#ffcc88",borderRadius:6,padding:"2px 10px",cursor:"pointer",fontSize:10,whiteSpace:"nowrap"}}>🔄 Recover</button>
       <button onClick={refresh} disabled={loading} style={{background:"transparent",border:"1px solid rgba(255,255,255,.3)",color:"inherit",borderRadius:6,padding:"2px 10px",cursor:"pointer",fontSize:10}}>{loading?"…":"↻ Sync"}</button>
     </div>
 
